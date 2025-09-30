@@ -53,22 +53,43 @@ int main(void)
 		return 0;
 	}
 
-	LOG_INF("Displaying pattern on strip");
+	LOG_INF("Starting red/green alternating pattern");
+	
 	while (1) {
-		for (size_t cursor = 0; cursor < ARRAY_SIZE(pixels); cursor++) {
-			memset(&pixels, 0x00, sizeof(pixels));
-			memcpy(&pixels[cursor], &colors[color], sizeof(struct led_rgb));
-
-			rc = led_strip_update_rgb(strip, pixels, STRIP_NUM_PIXELS);
-			if (rc) {
-				LOG_ERR("couldn't update strip: %d", rc);
-			}
-
-			k_sleep(DELAY_TIME);
+		/* Set all LEDs to red */
+		LOG_INF("Setting all LEDs to red");
+		for (size_t i = 0; i < STRIP_NUM_PIXELS; i++) {
+			pixels[i].r = CONFIG_SAMPLE_LED_BRIGHTNESS;
+			pixels[i].g = 0;
+			pixels[i].b = 0;
 		}
-
-		color = (color + 1) % ARRAY_SIZE(colors);
+		
+		rc = led_strip_update_rgb(strip, pixels, STRIP_NUM_PIXELS);
+		if (rc) {
+			LOG_ERR("couldn't update strip to red: %d", rc);
+		} else {
+			LOG_INF("Successfully updated %d LEDs to red", STRIP_NUM_PIXELS);
+		}
+		
+		k_sleep(K_MSEC(1000));
+		
+		/* Set all LEDs to green */
+		LOG_INF("Setting all LEDs to green");
+		for (size_t i = 0; i < STRIP_NUM_PIXELS; i++) {
+			pixels[i].r = 0;
+			pixels[i].g = CONFIG_SAMPLE_LED_BRIGHTNESS;
+			pixels[i].b = 0;
+		}
+		
+		rc = led_strip_update_rgb(strip, pixels, STRIP_NUM_PIXELS);
+		if (rc) {
+			LOG_ERR("couldn't update strip to green: %d", rc);
+		} else {
+			LOG_INF("Successfully updated %d LEDs to green", STRIP_NUM_PIXELS);
+		}
+		
+		k_sleep(K_MSEC(1000));
 	}
-
+	
 	return 0;
 }

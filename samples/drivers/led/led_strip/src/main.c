@@ -46,10 +46,20 @@ int main(void)
 	size_t color = 0;
 	int rc;
 
-	if (device_is_ready(strip)) {
-		LOG_INF("Found LED strip device %s", strip->name);
-	} else {
-		LOG_ERR("LED strip device %s is not ready", strip->name);
+	/* Wait for FLPR core to start up and retry device initialization */
+	LOG_INF("Waiting for FLPR core to initialize...");
+	
+	for (int retry = 0; retry < 10; retry++) {
+		k_sleep(K_MSEC(50));
+		if (device_is_ready(strip)) {
+			LOG_INF("Found LED strip device %s (attempt %d)", strip->name, retry + 1);
+			break;
+		}
+		LOG_WRN("LED strip device not ready, retrying... (attempt %d/10)", retry + 1);
+	}
+	
+	if (!device_is_ready(strip)) {
+		LOG_ERR("LED strip device %s failed to initialize after 10 attempts", strip->name);
 		return 0;
 	}
 

@@ -101,7 +101,6 @@ static int ws2812_hpf_icmsg_send_packet(const struct device *dev,
                                         hpf_ws2812_opcode_t opcode,
                                         uint32_t pin, uint8_t port, uint32_t numleds)
 {
-	const struct ws2812_nrf54l15_hpf_cfg *config = dev->config;
 	struct ws2812_nrf54l15_hpf_data *data = dev->data;
 	hpf_ws2812_data_packet_t packet;
 	int ret;

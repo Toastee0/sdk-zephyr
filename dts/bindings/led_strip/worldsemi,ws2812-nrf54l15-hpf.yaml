@@ -27,20 +27,6 @@ properties:
     required: true
     description: GPIO port number (0 or 1)
 
-  chain-length:
-    type: int
-    required: true
-    description: Number of LEDs in the strip
-
-  color-mapping:
-    type: uint8-array
-    required: true
-    description: |
-      Channel to color mapping as an array of LED_COLOR_ID_* values.
-      For example, [LED_COLOR_ID_GREEN, LED_COLOR_ID_RED, LED_COLOR_ID_BLUE]
-      for GRB LEDs, or [LED_COLOR_ID_RED, LED_COLOR_ID_GREEN, LED_COLOR_ID_BLUE]
-      for RGB LEDs.
-
   mbox-dev:
     type: phandle
     required: true

@@ -21,7 +21,7 @@
 
 		/* HPF communication configuration */
 		mbox-dev = <&cpuapp_vevif_tx>;  /* MBOX device for ARM->FLPR communication */
-		mbox-channel = <20>;            /* MBOX channel */
+		mbox-channel = <16>;            /* MBOX channel (ARM TX -> FLPR RX) */
 		reset-delay = <280>;            /* Reset delay in microseconds */
 
 		status = "okay";

@@ -46,8 +46,8 @@ struct ws2812_nrf54l15_hpf_data {
 	struct ipc_ept ept;
 	/* MBOX backend data */
 	struct mbox_msg mbox_msg;
-	/* HPF communication data */
-	hpf_ws2812_mbox_data_t hpf_data;
+	/* HPF communication data - simplified packet without shared memory locks */
+	hpf_ws2812_data_packet_t hpf_packet;
 };
 
 /* MBOX backend communication functions */
@@ -63,15 +63,15 @@ static int ws2812_hpf_mbox_send_packet(const struct device *dev,
 		return -ENODEV;
 	}
 
-	/* Prepare HPF data packet */
-	data->hpf_data.data.opcode = opcode;
-	data->hpf_data.data.pin = pin;
-	data->hpf_data.data.port = port;
-	data->hpf_data.data.numleds = numleds;
+	/* Prepare HPF data packet - direct packet, no shared memory */
+	data->hpf_packet.opcode = opcode;
+	data->hpf_packet.pin = pin;
+	data->hpf_packet.port = port;
+	data->hpf_packet.numleds = numleds;
 
-	/* Prepare MBOX message */
-	data->mbox_msg.data = &data->hpf_data;
-	data->mbox_msg.size = sizeof(data->hpf_data);
+	/* Prepare MBOX message with direct data transfer */
+	data->mbox_msg.data = &data->hpf_packet;
+	data->mbox_msg.size = sizeof(data->hpf_packet);
 
 	/* Send via MBOX */
 	ret = mbox_send(config->mbox_dev, config->mbox_channel, &data->mbox_msg);

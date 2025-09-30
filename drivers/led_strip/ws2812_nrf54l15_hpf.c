@@ -11,7 +11,6 @@
 
 #include <zephyr/drivers/led_strip.h>
 #include <zephyr/drivers/mbox.h>
-#include <zephyr/drivers/ipc_service.h>
 #include <zephyr/ipc/ipc_service.h>
 
 #include <string.h>

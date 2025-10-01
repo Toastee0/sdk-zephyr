@@ -44,39 +44,70 @@ struct ws2812_nrf54l15_hpf_data {
 	struct k_sem tx_sem;
 	/* ICMSG backend data */
 	struct ipc_ept ept;
-	/* MBOX backend data */
-	struct mbox_msg mbox_msg;
-	/* HPF communication data - simplified packet without shared memory locks */
-	hpf_ws2812_data_packet_t hpf_packet;
 };
 
+/* Get shared memory pointer */
+static hpf_ws2812_mbox_data_t *get_shared_memory(void)
+{
+	/* Get TX shared memory - this should match device tree sram_tx region */
+	return (hpf_ws2812_mbox_data_t *)DT_REG_ADDR(DT_NODELABEL(sram_tx));
+}
+
 /* MBOX backend communication functions */
-static int ws2812_hpf_mbox_send_packet(const struct device *dev, 
-                                       hpf_ws2812_opcode_t opcode,
-                                       uint32_t pin, uint8_t port, uint32_t numleds)
+static int ws2812_hpf_mbox_send_update(const struct device *dev, 
+                                       uint32_t pin, uint8_t port, uint32_t num_leds)
 {
 	const struct ws2812_nrf54l15_hpf_cfg *config = dev->config;
 	struct ws2812_nrf54l15_hpf_data *data = dev->data;
+	hpf_ws2812_mbox_data_t *shared_data;
 	int ret;
 
 	if (!config->mbox_dev) {
 		return -ENODEV;
 	}
 
-	/* Prepare HPF data packet - direct packet, no shared memory */
-	data->hpf_packet.opcode = opcode;
-	data->hpf_packet.pin = pin;
-	data->hpf_packet.port = port;
-	data->hpf_packet.numleds = numleds;
+	shared_data = get_shared_memory();
+	if (!shared_data) {
+		LOG_ERR("Failed to get shared memory");
+		return -ENOMEM;
+	}
 
-	/* Prepare MBOX message with direct data transfer */
-	data->mbox_msg.data = &data->hpf_packet;
-	data->mbox_msg.size = sizeof(data->hpf_packet);
+	/* Wait for FLPR to be ready with timeout (100ms) */
+	int timeout_ms = 100;
+	while (shared_data->lock.data_size != 0 && timeout_ms > 0) {
+		k_busy_wait(1000); /* 1ms per iteration */
+		timeout_ms--;
+	}
+	if (timeout_ms == 0) {
+		LOG_ERR("Timeout waiting for FLPR to consume data");
+		return -ETIMEDOUT;
+	}
 
-	/* Send via MBOX */
-	ret = mbox_send(config->mbox_dev, config->mbox_channel, &data->mbox_msg);
+	/* Acquire lock atomically */
+	if (!atomic_cas(&shared_data->lock.locked, DATA_LOCK_STATE_READY, DATA_LOCK_STATE_BUSY)) {
+		LOG_ERR("Failed to acquire shared memory lock");
+		return -EBUSY;
+	}
+
+	/* Set control data */
+	shared_data->control.opcode = HPF_WS2812_UPDATE;
+	shared_data->control.pin = pin;
+	shared_data->control.port = port;
+	shared_data->control.num_leds = num_leds;
+
+	/* Set data size to indicate data is available */
+	shared_data->lock.data_size = sizeof(hpf_ws2812_control_packet_t) + 
+	                              (num_leds * sizeof(hpf_ws2812_pixel_t));
+
+	/* Release lock with data */
+	atomic_set(&shared_data->lock.locked, DATA_LOCK_STATE_WITH_DATA);
+
+	/* Signal FLPR via MBOX */
+	ret = mbox_send(config->mbox_dev, config->mbox_channel, NULL);
 	if (ret < 0) {
 		LOG_ERR("MBOX send failed: %d", ret);
+		/* Reset lock on failure */
+		atomic_set(&shared_data->lock.locked, DATA_LOCK_STATE_READY);
 		return ret;
 	}
 
@@ -97,22 +128,28 @@ static void icmsg_ept_recv(const void *msg_data, size_t len, void *priv)
 	LOG_DBG("Received response from FLPR, len: %zu", len);
 }
 
-static int ws2812_hpf_icmsg_send_packet(const struct device *dev,
-                                        hpf_ws2812_opcode_t opcode,
-                                        uint32_t pin, uint8_t port, uint32_t numleds)
+static int ws2812_hpf_icmsg_send_update(const struct device *dev,
+                                        uint32_t pin, uint8_t port, uint32_t num_leds)
 {
 	struct ws2812_nrf54l15_hpf_data *data = dev->data;
-	hpf_ws2812_data_packet_t packet;
+	hpf_ws2812_mbox_data_t *shared_data;
+	hpf_ws2812_control_packet_t control;
 	int ret;
 
-	/* Prepare HPF data packet */
-	packet.opcode = opcode;
-	packet.pin = pin;
-	packet.port = port;
-	packet.numleds = numleds;
+	shared_data = get_shared_memory();
+	if (!shared_data) {
+		LOG_ERR("Failed to get shared memory");
+		return -ENOMEM;
+	}
 
-	/* Send via ICMSG */
-	ret = ipc_service_send(&data->ept, &packet, sizeof(packet));
+	/* Prepare control packet */
+	control.opcode = HPF_WS2812_UPDATE;
+	control.pin = pin;
+	control.port = port;
+	control.num_leds = num_leds;
+
+	/* Send control packet via ICMSG */
+	ret = ipc_service_send(&data->ept, &control, sizeof(control));
 	if (ret < 0) {
 		LOG_ERR("ICMSG send failed: %d", ret);
 		return ret;
@@ -121,16 +158,15 @@ static int ws2812_hpf_icmsg_send_packet(const struct device *dev,
 	return 0;
 }
 
-static int send_hpf_command(const struct device *dev,
-                           hpf_ws2812_opcode_t opcode,
-                           uint32_t pin, uint8_t port, uint32_t numleds)
+/* Send update command using configured backend */
+static int send_hpf_update(const struct device *dev, uint32_t pin, uint8_t port, uint32_t num_leds)
 {
 	const struct ws2812_nrf54l15_hpf_cfg *config = dev->config;
 
 	if (config->use_icmsg) {
-		return ws2812_hpf_icmsg_send_packet(dev, opcode, pin, port, numleds);
+		return ws2812_hpf_icmsg_send_update(dev, pin, port, num_leds);
 	} else {
-		return ws2812_hpf_mbox_send_packet(dev, opcode, pin, port, numleds);
+		return ws2812_hpf_mbox_send_update(dev, pin, port, num_leds);
 	}
 }
 
@@ -140,12 +176,17 @@ static int ws2812_nrf54l15_hpf_update_rgb(const struct device *dev,
 {
 	const struct ws2812_nrf54l15_hpf_cfg *config = dev->config;
 	struct ws2812_nrf54l15_hpf_data *data = dev->data;
-	uint8_t *pixel_data = (uint8_t *)pixels;
+	hpf_ws2812_mbox_data_t *shared_data;
 	size_t i;
 	int ret;
 
 	if (num_pixels > config->length) {
 		LOG_ERR("Too many pixels: %zu (max: %zu)", num_pixels, config->length);
+		return -EINVAL;
+	}
+
+	if (num_pixels > HPF_WS2812_MAX_LEDS) {
+		LOG_ERR("Too many pixels for shared buffer: %zu (max: %d)", num_pixels, HPF_WS2812_MAX_LEDS);
 		return -EINVAL;
 	}
 
@@ -156,39 +197,37 @@ static int ws2812_nrf54l15_hpf_update_rgb(const struct device *dev,
 		return ret;
 	}
 
-	/* Convert from RGB to on-wire format (e.g. GRB, GRBW, RGB, etc) */
-	for (i = 0; i < num_pixels; i++) {
-		uint8_t j;
-		const struct led_rgb current_pixel = pixels[i];
-
-		for (j = 0; j < config->num_colors; j++) {
-			switch (config->color_mapping[j]) {
-			/* White channel is not supported by LED strip API. */
-			case LED_COLOR_ID_WHITE:
-				*pixel_data++ = 0;
-				break;
-			case LED_COLOR_ID_RED:
-				*pixel_data++ = current_pixel.r;
-				break;
-			case LED_COLOR_ID_GREEN:
-				*pixel_data++ = current_pixel.g;
-				break;
-			case LED_COLOR_ID_BLUE:
-				*pixel_data++ = current_pixel.b;
-				break;
-			default:
-				k_sem_give(&data->tx_sem);
-				return -EINVAL;
-			}
-		}
+	shared_data = get_shared_memory();
+	if (!shared_data) {
+		LOG_ERR("Failed to get shared memory");
+		k_sem_give(&data->tx_sem);
+		return -ENOMEM;
 	}
 
-	/* TODO: Send pixel data to FLPR core via HPF
-	 * This will require extending the HPF protocol to handle
-	 * pixel data transfer, possibly via shared memory.
-	 * For now, send the refresh command.
-	 */
-	ret = send_hpf_command(dev, HPF_WS2812_REFRESH, 0, 0, num_pixels);
+	/* Wait for previous transfer to complete with timeout (100ms) */
+	int timeout_ms = 100;
+	while (shared_data->lock.data_size != 0 && timeout_ms > 0) {
+		k_busy_wait(1000); /* 1ms per iteration */
+		timeout_ms--;
+	}
+	if (timeout_ms == 0) {
+		LOG_ERR("Timeout waiting for FLPR to consume data");
+		k_sem_give(&data->tx_sem);
+		return -ETIMEDOUT;
+	}
+
+	/* Convert RGB pixels to GRB format in shared memory */
+	for (i = 0; i < num_pixels; i++) {
+		const struct led_rgb current_pixel = pixels[i];
+		
+		/* WS2812 expects GRB format */
+		shared_data->pixels[i].g = current_pixel.g;
+		shared_data->pixels[i].r = current_pixel.r;
+		shared_data->pixels[i].b = current_pixel.b;
+	}
+
+	/* Send update command to FLPR */
+	ret = send_hpf_update(dev, config->pin, config->port, num_pixels);
 
 	k_sem_give(&data->tx_sem);
 
@@ -245,6 +284,17 @@ static const uint8_t ws2812_nrf54l15_hpf_##idx##_color_mapping[] =	\
 			}						\
 		}							\
 									\
+		/* Initialize shared memory (used by both backends) */	\
+		hpf_ws2812_mbox_data_t *shared_data = get_shared_memory(); \
+		if (!shared_data) {					\
+			LOG_ERR("Failed to get shared memory");	\
+			return -ENOMEM;					\
+		}							\
+									\
+		/* Initialize shared data lock */			\
+		shared_data->lock.data_size = 0;			\
+		atomic_set(&shared_data->lock.locked, DATA_LOCK_STATE_READY); \
+									\
 		/* Initialize communication backend */			\
 		if (cfg->use_icmsg) {					\
 			/* Initialize ICMSG endpoint */			\
@@ -282,14 +332,6 @@ static const uint8_t ws2812_nrf54l15_hpf_##idx##_color_mapping[] =	\
 				LOG_ERR("MBOX device not ready");	\
 				return -ENODEV;				\
 			}						\
-		}							\
-									\
-		/* Configure GPIO pin on FLPR core */			\
-		ret = send_hpf_command(dev, HPF_WS2812_PIN_CONFIGURE,	\
-				       cfg->pin, cfg->port, cfg->length); \
-		if (ret < 0) {						\
-			LOG_ERR("HPF pin configure failed: %d", ret);	\
-			return ret;					\
 		}							\
 									\
 		LOG_INF("WS2812 nRF54L15 HPF driver initialized: "	\

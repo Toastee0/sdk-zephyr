@@ -12,8 +12,8 @@
 		compatible = "worldsemi,ws2812-nrf54l15-hpf";
 
 		/* WS2812 LED strip configuration */
-		pin = <4>;                  /* P1.04 (D0/A0 on XIAO nRF54L15) */
-		port = <1>;                 /* GPIO port 1 */
+		pin = <8>;                  /* P2.08 (D6/TX on XIAO nRF54L15) - FLPR can only use Port 2! */
+		port = <2>;                 /* GPIO port 2 (required for FLPR VIO access) */
 		chain-length = <10>;        /* 10 LEDs for testing */
 		color-mapping = <LED_COLOR_ID_GREEN    /* GRB color order for WS2812B */
 				 LED_COLOR_ID_RED
@@ -32,8 +32,8 @@
 	};
 };
 
-/* Enable GPIO port 1 for WS2812 data pin */
-&gpio1 {
+/* Enable GPIO port 2 for WS2812 data pin (FLPR requirement) */
+&gpio2 {
 	status = "okay";
 };
 
